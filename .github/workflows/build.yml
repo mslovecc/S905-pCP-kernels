@@ -1,4 +1,4 @@
-name: Build S905 piCorePlayer kernel
+name: Build S905 piCorePlayer kernel (in-tree)
 
 on:
   workflow_dispatch:

@@ -10,7 +10,6 @@ CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${ROOT_DIR}/.work"
 SRC="${WORK}/linux"
-OUT="${WORK}/out"
 PKG="${WORK}/package/kernel"
 FRAGMENT="${ROOT_DIR}/config/n1.fragment"
 
@@ -36,33 +35,26 @@ HEAD_COMMIT="$(git rev-parse HEAD)"
 echo "==> Kernel commit: ${HEAD_COMMIT}"
 echo "==> Kernel describe: $(git describe --tags --always --dirty 2>/dev/null || true)"
 
-if ! git cat-file -e "HEAD^{commit}" 2>/dev/null; then
-  echo "ERROR: HEAD is not a commit" >&2
-  exit 1
-fi
+git cat-file -e "HEAD^{commit}"
 
-mkdir -p "${OUT}"
+echo "==> Clean source tree"
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" mrproper
 
-echo "==> Base config"
-make -C "${SRC}" O="${OUT}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" defconfig
+echo "==> Base config (in-tree)"
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" defconfig
 
 echo "==> Merge N1 fragment"
 "${SRC}/scripts/kconfig/merge_config.sh" \
   -m \
-  "${OUT}/.config" \
+  "${SRC}/.config" \
   "${FRAGMENT}"
 
 echo "==> Resolve Kconfig dependencies"
-make -C "${SRC}" O="${OUT}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" olddefconfig
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" olddefconfig
 
-echo "==> Final kernel identity"
-grep -E '^(CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO=)' "${OUT}/.config" || true
-
-# The fragment is intentionally allowed to request modules, while Kconfig
-# may promote them to built-in (y) when a dependency or select requires it.
 state() {
   local sym="$1"
-  sed -n "s/^${sym}=//p" "${OUT}/.config" | head -n1
+  sed -n "s/^${sym}=//p" .config | head -n1
 }
 
 expect_y_or_m() {
@@ -86,6 +78,9 @@ expect_y() {
   fi
   echo "OK: ${sym}=y"
 }
+
+echo "==> Final kernel identity"
+grep -E '^(CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO=)' .config || true
 
 echo "==> Key final config"
 for s in \
@@ -129,30 +124,29 @@ for s in \
 done
 
 echo "==> Build kernel Image"
-make -C "${SRC}" O="${OUT}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
   LOCALVERSION="${KERNEL_LOCALVERSION}" -j"$(nproc)" Image
 
 echo "==> Build N1 DTB"
-make -C "${SRC}" O="${OUT}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
   LOCALVERSION="${KERNEL_LOCALVERSION}" \
   meson-gxl-s905d-phicomm-n1.dtb
 
 echo "==> Build modules"
-make -C "${SRC}" O="${OUT}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
   LOCALVERSION="${KERNEL_LOCALVERSION}" -j"$(nproc)" modules
 
 echo "==> Install modules into package"
-make -C "${SRC}" O="${OUT}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
   LOCALVERSION="${KERNEL_LOCALVERSION}" \
   INSTALL_MOD_PATH="${PKG}/rootfs" modules_install
 
-# Keep the package self-describing.
 mkdir -p "${PKG}/boot" "${PKG}/config"
-cp "${OUT}/arch/arm64/boot/Image" \
+cp "arch/arm64/boot/Image" \
   "${PKG}/boot/Image-${KERNEL_VERSION}-pcp-s905"
-cp "${OUT}/arch/arm64/boot/dts/amlogic/meson-gxl-s905d-phicomm-n1.dtb" \
+cp "arch/arm64/boot/dts/amlogic/meson-gxl-s905d-phicomm-n1.dtb" \
   "${PKG}/boot/meson-gxl-s905d-phicomm-n1.dtb"
-cp "${OUT}/.config" "${PKG}/config/kernel.config"
+cp ".config" "${PKG}/config/kernel.config"
 cp "${FRAGMENT}" "${PKG}/config/n1.fragment"
 printf '%s\n' "${HEAD_COMMIT}" > "${PKG}/config/kernel.commit"
 printf '%s\n' "${KERNEL_VERSION}" > "${PKG}/config/kernel.version"

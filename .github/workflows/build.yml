@@ -40,8 +40,14 @@ jobs:
       - name: Show build version
         run: |
           echo "Requested kernel version: ${KERNEL_VERSION}"
+          echo "==> Repository files"
+          ls -la
+          ls -la config scripts .github/workflows
+          echo "==> Normalize executable bit"
+          chmod +x scripts/build.sh
           test -f config/n1.fragment
-          test -x scripts/build.sh
+          test -f scripts/build.sh
+          test -f .github/workflows/build.yml
           sha256sum config/n1.fragment scripts/build.sh .github/workflows/build.yml
 
       - name: Build kernel

@@ -1,12 +1,12 @@
-name: Build tinycore-s905 kernel
+name: Build S905-pCP kernel
 
 on:
   workflow_dispatch:
     inputs:
       kernel_version:
-        description: "Linux kernel stable/LTS version"
+        description: "Linux kernel version (pCP 11.1.0 baseline)"
         required: true
-        default: "6.18.55"
+        default: "6.12.67"
 
 permissions:
   contents: read
@@ -16,12 +16,22 @@ jobs:
     runs-on: ubuntu-24.04
 
     env:
-      KERNEL_VERSION: ${{ inputs.kernel_version || '6.18.55' }}
+      # pCP 11.1.0 uses Linux 6.12.67.
+      # Keep this as the project default, while allowing an explicit
+      # workflow_dispatch input for controlled testing of another version.
+      KERNEL_VERSION: ${{ inputs.kernel_version || '6.12.67' }}
       DEBIAN_FRONTEND: noninteractive
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Show build version
+        run: |
+          echo "Repository : S905-pCP-kernels"
+          echo "Board      : Phicomm N1 / S905D / Meson GXL"
+          echo "pCP target : 11.1.0"
+          echo "Kernel     : ${KERNEL_VERSION}"
 
       - name: Install build dependencies
         run: |
@@ -44,15 +54,40 @@ jobs:
             xz-utils \
             zstd
 
-      - name: Build kernel
+      - name: Verify build script
         run: |
           chmod +x scripts/build.sh
+          echo "== build.sh version check =="
+          grep -nE 'KERNEL_VERSION|KERNEL_TAG' scripts/build.sh
+          echo
+          echo "== workflow version =="
+          echo "KERNEL_VERSION=${KERNEL_VERSION}"
+
+      - name: Build kernel
+        run: |
           ./scripts/build.sh
+
+      - name: Prepare artifacts
+        run: |
+          rm -rf artifacts
+          mkdir -p artifacts
+
+          if [ -d ".work/package/kernel" ]; then
+            cp -a .work/package/kernel/. artifacts/
+          else
+            echo "ERROR: .work/package/kernel was not produced"
+            find .work/package -maxdepth 4 -type f -print 2>/dev/null || true
+            exit 1
+          fi
+
+          echo
+          echo "== Final artifacts =="
+          find artifacts -type f -printf '%P\n' | sort
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tinycore-s905-kernel-${{ env.KERNEL_VERSION }}-n1
+          name: S905-pCP-kernel-${{ env.KERNEL_VERSION }}-n1
           path: artifacts/
           if-no-files-found: error
           retention-days: 14
@@ -71,20 +106,19 @@ jobs:
       - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
-          pattern: tinycore-s905-kernel-*
+          pattern: S905-pCP-kernel-*
           path: release-artifacts
           merge-multiple: true
 
       - name: Create release archive
         run: |
-          cd release-artifacts
-          tar -cJf "../tinycore-s905-kernel-${GITHUB_REF_NAME}-n1.tar.xz" .
+          tar -C release-artifacts             -cJf "S905-pCP-kernel-${GITHUB_REF_NAME}-n1.tar.xz" .
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            tinycore-s905-kernel-${{ github.ref_name }}-n1.tar.xz
+            S905-pCP-kernel-${{ github.ref_name }}-n1.tar.xz
             release-artifacts/SHA256SUMS
             release-artifacts/build-info.txt

@@ -3,258 +3,161 @@ set -euo pipefail
 
 KERNEL_VERSION="${KERNEL_VERSION:-6.12.67}"
 KERNEL_TAG="v${KERNEL_VERSION}"
-FRAGMENT="${GITHUB_WORKSPACE}/config/n1.fragment"
+KERNEL_LOCALVERSION="${KERNEL_LOCALVERSION:--pcp-s905}"
+ARCH=arm64
+CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
 
-WORK="${GITHUB_WORKSPACE}/.work"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORK="${ROOT_DIR}/.work"
 SRC="${WORK}/linux"
 OUT="${WORK}/out"
-PKG="${WORK}/package"
+PKG="${WORK}/package/kernel"
+FRAGMENT="${ROOT_DIR}/config/n1.fragment"
 
 rm -rf "${WORK}"
 mkdir -p "${WORK}" "${PKG}"
 
-echo "== piCorePlayer N1 kernel =="
-echo "Kernel: ${KERNEL_TAG}"
-echo "Board : Phicomm N1 / S905D / Meson GXL"
+echo "==> Kernel: ${KERNEL_TAG}"
+echo "==> Target: Phicomm N1 / S905D"
+echo "==> ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}"
 
-echo
-echo "== Kernel source =="
+if ! command -v "${CROSS_COMPILE}gcc" >/dev/null 2>&1; then
+  echo "ERROR: missing cross compiler: ${CROSS_COMPILE}gcc" >&2
+  exit 1
+fi
 
-git clone --depth 1 --branch "${KERNEL_TAG}" \
-  https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git \
-  "${SRC}"
+echo "==> Cloning Linux stable ${KERNEL_TAG}"
+git clone --depth=1 --branch "${KERNEL_TAG}" \
+  https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git "${SRC}"
 
-echo
-echo "== Kernel commit =="
-git -C "${SRC}" rev-parse HEAD
+cd "${SRC}"
 
-export ARCH=arm64
-export CROSS_COMPILE=aarch64-linux-gnu-
-export KBUILD_OUTPUT="${OUT}"
+HEAD_COMMIT="$(git rev-parse HEAD)"
+echo "==> Kernel commit: ${HEAD_COMMIT}"
+echo "==> Kernel describe: $(git describe --tags --always --dirty 2>/dev/null || true)"
 
-echo
-echo "== Configure =="
+if ! git cat-file -e "HEAD^{commit}" 2>/dev/null; then
+  echo "ERROR: HEAD is not a commit" >&2
+  exit 1
+fi
 
-make -C "${SRC}" O="${OUT}" defconfig
+mkdir -p "${OUT}"
 
+echo "==> Base config"
+make -C "${SRC}" O="${OUT}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" defconfig
+
+echo "==> Merge N1 fragment"
 "${SRC}/scripts/kconfig/merge_config.sh" \
   -m \
   "${OUT}/.config" \
   "${FRAGMENT}"
 
-make -C "${SRC}" O="${OUT}" olddefconfig
+echo "==> Resolve Kconfig dependencies"
+make -C "${SRC}" O="${OUT}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" olddefconfig
 
-echo
-echo "== Selected configuration after olddefconfig =="
+echo "==> Final kernel identity"
+grep -E '^(CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO=)' "${OUT}/.config" || true
 
-CONFIG_KEYS=(
-  CONFIG_ARM64
-  CONFIG_OF
-  CONFIG_BLK_DEV_INITRD
-  CONFIG_DEVTMPFS
-  CONFIG_DEVTMPFS_MOUNT
-  CONFIG_MMC
-  CONFIG_MMC_BLOCK
-  CONFIG_MMC_MESON_GX
-  CONFIG_EXT4_FS
-  CONFIG_SQUASHFS
-  CONFIG_BLK_DEV_LOOP
-  CONFIG_FAT_FS
-  CONFIG_VFAT_FS
-  CONFIG_USB
-  CONFIG_USB_XHCI_HCD
-  CONFIG_USB_DWC3
-  CONFIG_USB_STORAGE
-  CONFIG_USB_UAS
-  CONFIG_SCSI
-  CONFIG_BLK_DEV_SD
-  CONFIG_NET
-  CONFIG_NETDEVICES
-  CONFIG_ETHERNET
-  CONFIG_PHYLIB
-  CONFIG_STMMAC_ETH
-  CONFIG_STMMAC_PLATFORM
-  CONFIG_DWMAC_GENERIC
-  CONFIG_DWMAC_MESON
-  CONFIG_MESON_GXL_PHY
-  CONFIG_TTY
-  CONFIG_SERIAL_MESON
-  CONFIG_SOUND
-  CONFIG_SND
-  CONFIG_SND_PCM
-  CONFIG_SND_USB_AUDIO
-  CONFIG_SND_SOC
-  CONFIG_SND_MESON_AIU
-  CONFIG_SND_MESON_CARD_UTILS
-  CONFIG_SND_MESON_CODEC_GLUE
-  CONFIG_SND_MESON_GX_SOUND_CARD
-  CONFIG_MODULES
-)
-
-get_config() {
-  local key="$1"
-  local value
-  value="$(grep -E "^${key}=" "${OUT}/.config" | head -n1 | cut -d= -f2- || true)"
-  if [[ -n "${value}" ]]; then
-    printf '%s' "${value}"
-  elif grep -q "^# ${key} is not set" "${OUT}/.config"; then
-    printf 'n'
-  else
-    printf '<unset>'
-  fi
+# The fragment is intentionally allowed to request modules, while Kconfig
+# may promote them to built-in (y) when a dependency or select requires it.
+state() {
+  local sym="$1"
+  sed -n "s/^${sym}=//p" "${OUT}/.config" | head -n1
 }
 
-for key in "${CONFIG_KEYS[@]}"; do
-  printf '%-38s %s\n' "${key}" "$(get_config "${key}")"
-done
-
-echo
-echo "== Verify boot-critical configuration =="
-
-REQUIRED_Y=(
-  CONFIG_ARM64
-  CONFIG_OF
-  CONFIG_BLK_DEV_INITRD
-  CONFIG_DEVTMPFS
-  CONFIG_DEVTMPFS_MOUNT
-  CONFIG_MMC
-  CONFIG_MMC_BLOCK
-  CONFIG_MMC_MESON_GX
-  CONFIG_EXT4_FS
-  CONFIG_SQUASHFS
-  CONFIG_BLK_DEV_LOOP
-  CONFIG_FAT_FS
-  CONFIG_VFAT_FS
-  CONFIG_USB
-  CONFIG_SCSI
-  CONFIG_BLK_DEV_SD
-  CONFIG_NET
-  CONFIG_NETDEVICES
-  CONFIG_ETHERNET
-  CONFIG_TTY
-  CONFIG_SERIAL_MESON
-  CONFIG_MODULES
-)
-
-FAILED=0
-
-for key in "${REQUIRED_Y[@]}"; do
-  value="$(get_config "${key}")"
-  if [[ "${value}" == "y" ]]; then
-    echo "OK: ${key}=y"
-  else
-    echo "ERROR: ${key}: expected y, got ${value}"
-    FAILED=1
+expect_y_or_m() {
+  local sym="$1"
+  local v
+  v="$(state "${sym}")"
+  if [[ "${v}" != "y" && "${v}" != "m" ]]; then
+    echo "ERROR: ${sym}=${v:-n}, expected y or m" >&2
+    return 1
   fi
-done
+  echo "OK: ${sym}=${v}"
+}
 
-echo
-echo "== Verify pCP audio/network drivers =="
-
-ALLOWED_TRISTATE=(
-  CONFIG_USB_STORAGE
-  CONFIG_USB_UAS
-  CONFIG_STMMAC_ETH
-  CONFIG_STMMAC_PLATFORM
-  CONFIG_DWMAC_GENERIC
-  CONFIG_DWMAC_MESON
-  CONFIG_MESON_GXL_PHY
-  CONFIG_SND
-  CONFIG_SND_PCM
-  CONFIG_SND_USB_AUDIO
-  CONFIG_SND_SOC
-  CONFIG_SND_MESON_AIU
-  CONFIG_SND_MESON_CARD_UTILS
-  CONFIG_SND_MESON_CODEC_GLUE
-  CONFIG_SND_MESON_GX_SOUND_CARD
-)
-
-for key in "${ALLOWED_TRISTATE[@]}"; do
-  value="$(get_config "${key}")"
-  if [[ "${value}" == "y" || "${value}" == "m" ]]; then
-    echo "OK: ${key}=${value}"
-  else
-    echo "ERROR: ${key}: audio/network driver is disabled (${value})"
-    FAILED=1
+expect_y() {
+  local sym="$1"
+  local v
+  v="$(state "${sym}")"
+  if [[ "${v}" != "y" ]]; then
+    echo "ERROR: ${sym}=${v:-n}, expected y" >&2
+    return 1
   fi
+  echo "OK: ${sym}=y"
+}
+
+echo "==> Key final config"
+for s in \
+  CONFIG_ARM64 CONFIG_OF CONFIG_BLK_DEV_INITRD \
+  CONFIG_MMC_MESON_GX CONFIG_EXT4_FS CONFIG_SQUASHFS \
+  CONFIG_USB CONFIG_USB_XHCI_HCD CONFIG_USB_DWC3 \
+  CONFIG_USB_STORAGE CONFIG_USB_UAS CONFIG_SCSI \
+  CONFIG_STMMAC_ETH CONFIG_STMMAC_PLATFORM CONFIG_DWMAC_MESON \
+  CONFIG_MESON_GXL_PHY CONFIG_SERIAL_MESON \
+  CONFIG_SOUND CONFIG_SND CONFIG_SND_PCM CONFIG_SND_USB \
+  CONFIG_SND_USB_AUDIO CONFIG_SND_SOC \
+  CONFIG_SND_MESON_AIU CONFIG_SND_MESON_GX_SOUND_CARD \
+  CONFIG_MODULES; do
+  printf '%-42s %s\n' "${s}" "$(state "${s}")"
 done
 
-if [[ "${FAILED}" -ne 0 ]]; then
-  echo
-  echo "Kernel configuration verification FAILED"
-  exit 1
-fi
+echo "==> Verify boot-critical options"
+for s in \
+  CONFIG_ARM64 CONFIG_OF CONFIG_BLK_DEV_INITRD \
+  CONFIG_DEVTMPFS CONFIG_DEVTMPFS_MOUNT \
+  CONFIG_MMC CONFIG_MMC_BLOCK CONFIG_MMC_MESON_GX \
+  CONFIG_EXT4_FS CONFIG_SQUASHFS CONFIG_BLK_DEV_LOOP \
+  CONFIG_USB CONFIG_USB_XHCI_HCD CONFIG_USB_DWC3 \
+  CONFIG_USB_STORAGE CONFIG_SCSI CONFIG_BLK_DEV_SD \
+  CONFIG_NET CONFIG_NETDEVICES CONFIG_ETHERNET CONFIG_PHYLIB \
+  CONFIG_TTY CONFIG_SERIAL_MESON CONFIG_SERIAL_MESON_CONSOLE \
+  CONFIG_SOUND CONFIG_SND CONFIG_SND_PCM CONFIG_SND_USB \
+  CONFIG_SND_SOC CONFIG_MODULES; do
+  expect_y "${s}"
+done
 
-echo
-echo "Kernel configuration verification PASSED"
+echo "==> Verify driver options (y or m)"
+for s in \
+  CONFIG_USB_UAS \
+  CONFIG_STMMAC_ETH CONFIG_STMMAC_PLATFORM CONFIG_DWMAC_GENERIC \
+  CONFIG_DWMAC_MESON CONFIG_MESON_GXL_PHY \
+  CONFIG_SND_USB_AUDIO CONFIG_SND_MESON_AIU \
+  CONFIG_SND_MESON_CARD_UTILS CONFIG_SND_MESON_CODEC_GLUE \
+  CONFIG_SND_MESON_GX_SOUND_CARD; do
+  expect_y_or_m "${s}"
+done
 
-echo
-echo "== Build Image, DTBs and modules =="
+echo "==> Build kernel Image"
+make -C "${SRC}" O="${OUT}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
+  LOCALVERSION="${KERNEL_LOCALVERSION}" -j"$(nproc)" Image
 
-make -C "${SRC}" O="${OUT}" -j"$(nproc)" \
-  Image dtbs modules
+echo "==> Build N1 DTB"
+make -C "${SRC}" O="${OUT}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
+  LOCALVERSION="${KERNEL_LOCALVERSION}" \
+  meson-gxl-s905d-phicomm-n1.dtb
 
-echo
-echo "== Install modules =="
+echo "==> Build modules"
+make -C "${SRC}" O="${OUT}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
+  LOCALVERSION="${KERNEL_LOCALVERSION}" -j"$(nproc)" modules
 
-rm -rf "${PKG}/modules"
+echo "==> Install modules into package"
+make -C "${SRC}" O="${OUT}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
+  LOCALVERSION="${KERNEL_LOCALVERSION}" \
+  INSTALL_MOD_PATH="${PKG}/rootfs" modules_install
 
-make -C "${SRC}" O="${OUT}" \
-  INSTALL_MOD_PATH="${PKG}/modules" \
-  modules_install
-
-echo
-echo "== Package kernel =="
-
-mkdir -p "${PKG}/kernel/dtb/amlogic"
-
+# Keep the package self-describing.
+mkdir -p "${PKG}/boot" "${PKG}/config"
 cp "${OUT}/arch/arm64/boot/Image" \
-  "${PKG}/kernel/Image"
-
+  "${PKG}/boot/Image-${KERNEL_VERSION}-pcp-s905"
 cp "${OUT}/arch/arm64/boot/dts/amlogic/meson-gxl-s905d-phicomm-n1.dtb" \
-  "${PKG}/kernel/dtb/amlogic/meson-gxl-s905d-phicomm-n1.dtb"
+  "${PKG}/boot/meson-gxl-s905d-phicomm-n1.dtb"
+cp "${OUT}/.config" "${PKG}/config/kernel.config"
+cp "${FRAGMENT}" "${PKG}/config/n1.fragment"
+printf '%s\n' "${HEAD_COMMIT}" > "${PKG}/config/kernel.commit"
+printf '%s\n' "${KERNEL_VERSION}" > "${PKG}/config/kernel.version"
 
-cp "${OUT}/.config" \
-  "${PKG}/kernel/config-6.12.67-pcp-s905"
+echo "==> Package contents"
+find "${PKG}" -type f -printf '%P\n' | sort
 
-cat > "${PKG}/kernel/build-info.txt" <<EOF
-project=tinycore-s905-kernel
-profile=picoreplayer-n1
-version=v0.2.0
-kernel_version=${KERNEL_VERSION}
-kernel_tag=${KERNEL_TAG}
-kernel_commit=$(git -C "${SRC}" rev-parse HEAD)
-board=phicomm-n1
-soc=amlogic-s905d
-family=meson-gxl
-arch=arm64
-purpose=piCorePlayer
-EOF
-
-tar -C "${PKG}/modules" \
-  -cJf "${PKG}/kernel/modules-6.12.67-pcp-s905.tar.xz" \
-  lib/modules
-
-rm -rf "${PKG}/modules"
-
-(
-  cd "${PKG}/kernel"
-  sha256sum \
-    Image \
-    dtb/amlogic/meson-gxl-s905d-phicomm-n1.dtb \
-    config-6.12.67-pcp-s905 \
-    modules-6.12.67-pcp-s905.tar.xz \
-    > SHA256SUMS
-)
-
-echo
-echo "== Artifacts =="
-
-find "${PKG}/kernel" -type f -maxdepth 4 -printf '%P\n' | sort
-
-echo
-echo "== SHA256SUMS =="
-cat "${PKG}/kernel/SHA256SUMS"
-
-echo
-echo "piCorePlayer N1 kernel build completed successfully."
+echo "==> Kernel build complete"

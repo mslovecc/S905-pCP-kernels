@@ -1,10 +1,10 @@
-name: Build S905-pCP kernel
+name: Build S905 piCorePlayer kernel
 
 on:
   workflow_dispatch:
     inputs:
       kernel_version:
-        description: "Linux kernel version (pCP 11.1.0 baseline)"
+        description: "Linux kernel stable version"
         required: true
         default: "6.12.67"
 
@@ -14,24 +14,13 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-
     env:
-      # pCP 11.1.0 uses Linux 6.12.67.
-      # Keep this as the project default, while allowing an explicit
-      # workflow_dispatch input for controlled testing of another version.
       KERNEL_VERSION: ${{ inputs.kernel_version || '6.12.67' }}
       DEBIAN_FRONTEND: noninteractive
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Show build version
-        run: |
-          echo "Repository : S905-pCP-kernels"
-          echo "Board      : Phicomm N1 / S905D / Meson GXL"
-          echo "pCP target : 11.1.0"
-          echo "Kernel     : ${KERNEL_VERSION}"
 
       - name: Install build dependencies
         run: |
@@ -40,85 +29,40 @@ jobs:
             bc \
             bison \
             build-essential \
-            ccache \
             flex \
             gcc-aarch64-linux-gnu \
             git \
             libelf-dev \
             libssl-dev \
-            libncurses-dev \
-            pahole \
-            pkg-config \
-            python3 \
             rsync \
-            xz-utils \
-            zstd
+            u-boot-tools
 
-      - name: Verify build script
+      - name: Show build version
         run: |
-          chmod +x scripts/build.sh
-          echo "== build.sh version check =="
-          grep -nE 'KERNEL_VERSION|KERNEL_TAG' scripts/build.sh
-          echo
-          echo "== workflow version =="
-          echo "KERNEL_VERSION=${KERNEL_VERSION}"
+          echo "Requested kernel version: ${KERNEL_VERSION}"
+          test -f config/n1.fragment
+          test -x scripts/build.sh
+          sha256sum config/n1.fragment scripts/build.sh .github/workflows/build.yml
 
       - name: Build kernel
         run: |
-          ./scripts/build.sh
+          chmod +x scripts/build.sh
+          KERNEL_VERSION="${KERNEL_VERSION}" ./scripts/build.sh
 
       - name: Prepare artifacts
         run: |
           rm -rf artifacts
           mkdir -p artifacts
+          cp -a .work/package/kernel/. artifacts/
+          tar -C artifacts -czf "S905-pCP-kernel-${KERNEL_VERSION}-n1.tar.gz" \
+            boot config rootfs
+          rm -rf artifacts/rootfs
+          find artifacts -maxdepth 3 -type f -print | sort
 
-          if [ -d ".work/package/kernel" ]; then
-            cp -a .work/package/kernel/. artifacts/
-          else
-            echo "ERROR: .work/package/kernel was not produced"
-            find .work/package -maxdepth 4 -type f -print 2>/dev/null || true
-            exit 1
-          fi
-
-          echo
-          echo "== Final artifacts =="
-          find artifacts -type f -printf '%P\n' | sort
-
-      - name: Upload build artifact
+      - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
           name: S905-pCP-kernel-${{ env.KERNEL_VERSION }}-n1
           path: artifacts/
           if-no-files-found: error
           retention-days: 14
-
-  release:
-    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/')
-    needs: build
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          pattern: S905-pCP-kernel-*
-          path: release-artifacts
-          merge-multiple: true
-
-      - name: Create release archive
-        run: |
-          tar -C release-artifacts             -cJf "S905-pCP-kernel-${GITHUB_REF_NAME}-n1.tar.xz" .
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: |
-            S905-pCP-kernel-${{ github.ref_name }}-n1.tar.xz
-            release-artifacts/SHA256SUMS
-            release-artifacts/build-info.txt

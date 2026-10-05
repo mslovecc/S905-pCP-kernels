@@ -1,28 +1,21 @@
-# piCorePlayer for Phicomm N1 / Amlogic S905D / Meson GXL
-# Kernel baseline: Linux 6.12.67
+# Phicomm N1 / S905D - piCorePlayer 11.1.0 kernel baseline
+# Linux 6.12.67
 #
-# Design goal:
-#   boot -> initrd -> piCore userspace -> Ethernet/SSH -> ALSA/USB DAC
+# First-stage target:
+# U-Boot -> Linux -> piCore init -> Ethernet -> DHCP -> SSH
+# -> ALSA -> USB DAC -> Squeezelite -> LMS -> playback.
 #
-# This is NOT a generic desktop kernel. DRM/HDMI and OverlayFS are deliberately
-# not part of the first pCP bring-up baseline.
+# HDMI/DRM is intentionally not required in this stage.
 
-CONFIG_LOCALVERSION="-pcp-s905"
-
-# ---------------------------------------------------------------------------
-# ARM64 / Device Tree / initrd
-# ---------------------------------------------------------------------------
 CONFIG_ARM64=y
 CONFIG_OF=y
 CONFIG_OF_FLATTREE=y
+
 CONFIG_BLK_DEV_INITRD=y
 CONFIG_DEVTMPFS=y
 CONFIG_DEVTMPFS_MOUNT=y
-
-# ---------------------------------------------------------------------------
-# Boot/root storage
-# ---------------------------------------------------------------------------
 CONFIG_BLOCK=y
+
 CONFIG_MMC=y
 CONFIG_MMC_BLOCK=y
 CONFIG_MMC_MESON_GX=y
@@ -35,21 +28,16 @@ CONFIG_SQUASHFS_XZ=y
 CONFIG_SQUASHFS_ZSTD=y
 CONFIG_BLK_DEV_LOOP=y
 
-# VFAT is useful for the boot partition, but MSDOS_FS is not required.
 CONFIG_FAT_FS=y
 CONFIG_VFAT_FS=y
 CONFIG_NLS_CODEPAGE_437=y
 CONFIG_NLS_ISO8859_1=y
 
-# initrd compression
 CONFIG_RD_GZIP=y
 CONFIG_RD_XZ=y
 CONFIG_RD_LZ4=y
 CONFIG_RD_ZSTD=y
 
-# ---------------------------------------------------------------------------
-# USB host / USB storage
-# ---------------------------------------------------------------------------
 CONFIG_USB=y
 CONFIG_USB_XHCI_HCD=y
 CONFIG_USB_XHCI_PLATFORM=y
@@ -64,24 +52,16 @@ CONFIG_BLK_DEV_SD=y
 CONFIG_USB_STORAGE=y
 CONFIG_USB_UAS=m
 
-# ---------------------------------------------------------------------------
-# Ethernet - N1 uses Meson GXL + DesignWare MAC
-# Driver can be built as module for piCore's module-loading model.
-# ---------------------------------------------------------------------------
 CONFIG_NET=y
 CONFIG_NETDEVICES=y
 CONFIG_ETHERNET=y
 CONFIG_PHYLIB=y
-
 CONFIG_STMMAC_ETH=m
 CONFIG_STMMAC_PLATFORM=m
 CONFIG_DWMAC_GENERIC=m
 CONFIG_DWMAC_MESON=m
 CONFIG_MESON_GXL_PHY=m
 
-# ---------------------------------------------------------------------------
-# Serial console
-# ---------------------------------------------------------------------------
 CONFIG_TTY=y
 CONFIG_SERIAL_8250=y
 CONFIG_SERIAL_8250_CONSOLE=y
@@ -89,31 +69,21 @@ CONFIG_SERIAL_8250_DW=y
 CONFIG_SERIAL_MESON=y
 CONFIG_SERIAL_MESON_CONSOLE=y
 
-# ---------------------------------------------------------------------------
-# ALSA / USB Audio / Amlogic GX audio
-#
-# USB DAC is the primary pCP audio target.
-# Amlogic GX audio is retained for N1 native/HDMI/SPDIF possibilities.
-# ---------------------------------------------------------------------------
 CONFIG_SOUND=y
-CONFIG_SND=m
-CONFIG_SND_PCM=m
-CONFIG_SND_TIMER=m
-CONFIG_SND_HWDEP=m
-CONFIG_SND_RAWMIDI=m
-
+CONFIG_SND=y
+CONFIG_SND_PCM=y
+CONFIG_SND_TIMER=y
+CONFIG_SND_HWDEP=y
+CONFIG_SND_RAWMIDI=y
+CONFIG_SND_USB=y
 CONFIG_SND_USB_AUDIO=m
 
-CONFIG_SND_SOC=m
-CONFIG_SND_SOC_GENERIC_DMAENGINE_PCM=m
-
+CONFIG_SND_SOC=y
+CONFIG_SND_SOC_GENERIC_DMAENGINE_PCM=y
 CONFIG_SND_MESON_AIU=m
 CONFIG_SND_MESON_CARD_UTILS=m
 CONFIG_SND_MESON_CODEC_GLUE=m
 CONFIG_SND_MESON_GX_SOUND_CARD=m
 
-# ---------------------------------------------------------------------------
-# Kernel modules
-# ---------------------------------------------------------------------------
 CONFIG_MODULES=y
 CONFIG_MODULE_UNLOAD=y

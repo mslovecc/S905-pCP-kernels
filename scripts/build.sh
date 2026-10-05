@@ -84,7 +84,7 @@ grep -E '^(CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO=)' .config || true
 
 echo "==> Key final config"
 for s in \
-  CONFIG_ARM64 CONFIG_OF CONFIG_BLK_DEV_INITRD \
+  CONFIG_ARM64 CONFIG_ARCH_MESON CONFIG_OF CONFIG_BLK_DEV_INITRD \
   CONFIG_MMC_MESON_GX CONFIG_EXT4_FS CONFIG_SQUASHFS \
   CONFIG_USB CONFIG_USB_XHCI_HCD CONFIG_USB_DWC3 \
   CONFIG_USB_STORAGE CONFIG_USB_UAS CONFIG_SCSI \
@@ -99,7 +99,7 @@ done
 
 echo "==> Verify boot-critical options"
 for s in \
-  CONFIG_ARM64 CONFIG_OF CONFIG_BLK_DEV_INITRD \
+  CONFIG_ARM64 CONFIG_ARCH_MESON CONFIG_OF CONFIG_BLK_DEV_INITRD \
   CONFIG_DEVTMPFS CONFIG_DEVTMPFS_MOUNT \
   CONFIG_MMC CONFIG_MMC_BLOCK CONFIG_MMC_MESON_GX \
   CONFIG_EXT4_FS CONFIG_SQUASHFS CONFIG_BLK_DEV_LOOP \
@@ -127,10 +127,17 @@ echo "==> Build kernel Image"
 make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
   LOCALVERSION="${KERNEL_LOCALVERSION}" -j"$(nproc)" Image
 
+echo "==> Check N1 DTS"
+DTS="arch/arm64/boot/dts/amlogic/meson-gxl-s905d-phicomm-n1.dts"
+DTB="arch/arm64/boot/dts/amlogic/meson-gxl-s905d-phicomm-n1.dtb"
+test -f "${DTS}"
+grep -q 'meson-gxl-s905d-phicomm-n1.dtb' arch/arm64/boot/dts/amlogic/Makefile
+echo "OK: N1 DTS and DTB registration found"
+
 echo "==> Build N1 DTB"
-make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
-  LOCALVERSION="${KERNEL_LOCALVERSION}" \
-  meson-gxl-s905d-phicomm-n1.dtb
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}"   LOCALVERSION="${KERNEL_LOCALVERSION}"   meson-gxl-s905d-phicomm-n1.dtb
+test -f "${DTB}"
+echo "OK: ${DTB}"
 
 echo "==> Build modules"
 make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \

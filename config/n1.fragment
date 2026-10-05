@@ -8,6 +8,7 @@
 # HDMI/DRM is intentionally not required in this stage.
 
 CONFIG_ARM64=y
+CONFIG_ARCH_MESON=y
 CONFIG_OF=y
 CONFIG_OF_FLATTREE=y
 

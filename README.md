@@ -1,76 +1,68 @@
-# S905-pCP-kernels v0.3.1
+# S905-pCP-kernels v0.4.1
 
-Phicomm N1 (Amlogic S905D / Meson GXL) kernel workflow for piCorePlayer.
+## Goal
 
-## Why v0.3.1 changed the architecture
+This version is specifically a **pCP SquashFS boot kernel**, not merely
+another N1-capable ophub kernel.
 
-v0.3.0 tried to do:
+It keeps ophub/unifreq as the hardware/kernel generation mechanism, but
+replaces the previous "stable config only" approach with an explicit,
+auditable pCP early-rootfs boot contract.
 
-    git clone --branch 6.12.y https://github.com/unifreq/linux-6.12.y.git
+The build is pinned to Linux 6.12.67 because pCP 11.1.0 uses 6.12.67.
 
-and failed because `6.12.y` is a kernel **series selector**, not a Git branch
-that should be passed directly to `git clone`.
+## Build model
 
-ophub resolves the repository and kernel series itself. Its documented GitHub
-Action interface is:
+    ophub/unifreq 6.12.y
+             +
+    ophub stable 6.12 baseline
+             +
+    pCP-N1 SquashFS boot overrides
+             |
+             v
+       6.12.67-pcp-n1
 
-    uses: ophub/amlogic-s9xxx-armbian@main
-    with:
-      build_target: kernel
-      kernel_source: unifreq
-      kernel_version: 6.12.y
-      kernel_auto: true
+The workflow downloads ophub's current `config-6.12` at build time,
+applies `config/pcp-squashfs-boot.fragment`, and passes the resulting
+complete config to the ophub Action using `kernel_config`.
 
-The v0.3.1 workflow therefore delegates source resolution, compilation,
-DTB generation, module installation and packaging to the ophub Action.
+## What this version guarantees at build time
 
-## Configuration strategy
+The final config must have the declared early-rootfs chain built in (`=y`):
 
-v0.3.1 deliberately uses:
+- ARM64 / Meson
+- initrd
+- devtmpfs
+- block layer / loop
+- SquashFS and common decompression formats
+- EXT4
+- FAT/MSDOS/VFAT
+- MMC block + Meson GX/MX SDIO
+- SCSI + SCSI disk
+- USB/XHCI/EHCI
+- USB storage/UAS
+- DWC3 + Meson G12A glue
+- Meson GXL USB2 PHY
+- proc/sysfs/tmpfs
+- ELF
+- initrd compression formats
 
-    config_flavor: stable
+This is a **static kernel-side guarantee** that the kernel contains the
+pieces needed to access and mount a SquashFS root filesystem on the N1
+through the supported storage paths.
 
-instead of feeding our old small `n1-pcp.fragment` through `kernel_config`.
+It does NOT yet prove that the pCP 11.1.0 initrd uses the expected device,
+partition, filesystem path, boot arguments, or extension layout. Those are
+the next-stage pCP image analysis items.
 
-This distinction is important: ophub's `kernel_config` input expects a
-versioned configuration template such as `config-6.12`, not a merge fragment.
+## Deliberate separation
 
-The current ophub stable 6.12 configuration already contains the key
-first-stage requirements we have been targeting, including:
+This version does not create `N1-KERNEL-<KVER>.tcz` yet.
 
-- ARM64 / Meson platform support
-- initrd and common filesystem support
-- USB XHCI/EHCI/DWC3 and USB storage/UAS
-- USB audio (`SND_USB_AUDIO=m`)
-- Amlogic Meson audio drivers
-- module support
+The runtime modules will be handled after the actual pCP 11.1.0 image
+is inspected. The current stage is only to establish the kernel-side
+early-rootfs contract.
 
-The authoritative template is maintained in ophub/kernel.
+## Important
 
-## Patch strategy
-
-`kernel-patch/6.12.y/` is intentionally empty in v0.3.1.
-
-`auto_patch` is disabled. We will only add a patch after a concrete build
-or N1 runtime test proves that it is necessary. This avoids carrying
-speculative patches on top of the unifreq hardware baseline.
-
-## First-stage target
-
-    U-Boot
-      -> Linux
-      -> pCP init
-      -> Ethernet / DHCP
-      -> SSH
-      -> ALSA
-      -> USB DAC
-      -> Squeezelite
-      -> LMS playback
-
-HDMI/DRM is not a first-stage blocker.
-
-## GitHub Actions
-
-There is no local `build.sh` in v0.3.1. The build is intentionally performed
-by the ophub GitHub Action/container so that kernel-series resolution and the
-actual compilation environment match ophub's workflow model.
+The workflow fails if any required early-rootfs symbol is not `=y`.

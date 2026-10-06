@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-kernel:
@@ -107,32 +107,26 @@ jobs:
         run: |
           set -euo pipefail
 
+          # ophub exports the authoritative kernel output directory through
+          # PACKAGED_OUTPUTPATH. Do not guess the path: v0.4.1 proved that
+          # the actual compiled kernel packages live there.
+          echo "PACKAGED_OUTPUTPATH=${PACKAGED_OUTPUTPATH:-}"
+          test -n "${PACKAGED_OUTPUTPATH:-}"
+          test -d "$PACKAGED_OUTPUTPATH"
+
           rm -rf artifacts
           mkdir -p artifacts
 
-          for base in \
-            build/output \
-            output \
-            /builder \
-            /opt/kernel/compile-kernel/output
-          do
-            if [ -d "$base" ]; then
-              find "$base" -type f \( \
-                -name 'Image*' -o \
-                -name 'zImage*' -o \
-                -name '*.dtb' -o \
-                -name '*modules*.tar*' -o \
-                -name '*boot*.tar*' -o \
-                -name '*header*.tar*' -o \
-                -name 'System.map*' \
-                \) -exec cp -av {} artifacts/ \; || true
-            fi
-          done
+          echo "=== ophub packaged output ==="
+          find "$PACKAGED_OUTPUTPATH" -maxdepth 2 -type f -printf '%p\n' | sort
+
+          # Preserve every file produced by ophub (tar.gz packages, config,
+          # dtb/module packages, checksums, etc.) rather than filtering by
+          # guessed filenames.
+          find "$PACKAGED_OUTPUTPATH" -maxdepth 1 -type f -exec cp -av {} artifacts/ \;
 
           cp final.config artifacts/config-6.12.67-pcp-n1
-
-          cp config/pcp-squashfs-boot.fragment \
-             artifacts/pcp-squashfs-boot.fragment
+          cp config/pcp-squashfs-boot.fragment artifacts/pcp-squashfs-boot.fragment
 
           echo
           echo "=== collected artifacts ==="
@@ -155,3 +149,30 @@ jobs:
           path: artifacts/
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish kernel artifacts to Release
+        uses: ophub/upload-to-releases@main
+        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
+        with:
+          tag: v0.4.2
+          artifacts: artifacts/*
+          allow_updates: true
+          remove_artifacts: false
+          replaces_artifacts: true
+          make_latest: true
+          gh_token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            ## S905-pCP kernel v0.4.2
+
+            pCP-N1 SquashFS early-rootfs boot kernel generated with
+            ophub/unifreq Linux 6.12.67.
+
+            - Target: Phicomm N1 / Amlogic S905D / Meson GXL
+            - Kernel: 6.12.67
+            - Build profile: pCP-N1 SquashFS boot contract
+            - Runtime modules are not yet converted to `N1-KERNEL-<KVER>.tcz`
+            - SHA256 checksums are included in `SHA256SUMS`
+
+            This release contains the exact files collected from the ophub
+            `PACKAGED_OUTPUTPATH`, plus the final kernel config and the
+            pCP SquashFS boot configuration contract.

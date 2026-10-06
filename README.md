@@ -1,4 +1,4 @@
-# S905-pCP-kernels v0.4.1
+# S905-pCP-kernels v0.4.2
 
 ## Goal
 
@@ -59,9 +59,20 @@ the next-stage pCP image analysis items.
 
 This version does not create `N1-KERNEL-<KVER>.tcz` yet.
 
+The workflow also publishes the complete ophub kernel output to GitHub
+Release tag `v0.4.2`, in addition to the normal Actions Artifact.
+
 The runtime modules will be handled after the actual pCP 11.1.0 image
 is inspected. The current stage is only to establish the kernel-side
 early-rootfs contract.
+
+## Artifact and Release output
+
+The workflow copies the complete directory exported by ophub through
+`PACKAGED_OUTPUTPATH`. This avoids depending on guessed output filenames.
+The same collected files are uploaded both as the Actions Artifact and to
+GitHub Release `v0.4.2`. The repository workflow therefore needs
+`contents: write` permission for the release upload.
 
 ## Important
 

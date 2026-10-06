@@ -1,65 +1,76 @@
-# S905-pCP-kernels v0.3.0 — Route B
+# S905-pCP-kernels v0.3.1
 
-Route B uses `unifreq/linux-6.12.y` as the Phicomm N1 hardware/kernel
-baseline, then adds piCorePlayer runtime requirements with a small Kconfig
-fragment.
+Phicomm N1 (Amlogic S905D / Meson GXL) kernel workflow for piCorePlayer.
 
-Target: Phicomm N1 / Amlogic S905D / Meson GXL / ARM64.
+## Why v0.3.1 changed the architecture
 
-Normal N1 DTB:
-`meson-gxl-s905d-phicomm-n1.dtb`
+v0.3.0 tried to do:
 
-The alternate DMA-threshold DTB is intentionally not selected in v0.3.0.
+    git clone --branch 6.12.y https://github.com/unifreq/linux-6.12.y.git
 
-## Build flow
+and failed because `6.12.y` is a kernel **series selector**, not a Git branch
+that should be passed directly to `git clone`.
 
-unifreq/linux-6.12.y -> defconfig -> n1-pcp.fragment -> olddefconfig
--> Image + `make dtbs` + modules -> `.work/package/`
+ophub resolves the repository and kernel series itself. Its documented GitHub
+Action interface is:
 
-The DTB is built with `make dtbs`; this avoids the previous incorrect bare
-top-level DTB target.
+    uses: ophub/amlogic-s9xxx-armbian@main
+    with:
+      build_target: kernel
+      kernel_source: unifreq
+      kernel_version: 6.12.y
+      kernel_auto: true
 
-## U-Boot
+The v0.3.1 workflow therefore delegates source resolution, compilation,
+DTB generation, module installation and packaging to the ophub Action.
 
-U-Boot is not rebuilt here. Keep using the known-good N1 U-Boot from the
-ophub/unifreq ecosystem, such as `u-boot-n1.bin`.
+## Configuration strategy
+
+v0.3.1 deliberately uses:
+
+    config_flavor: stable
+
+instead of feeding our old small `n1-pcp.fragment` through `kernel_config`.
+
+This distinction is important: ophub's `kernel_config` input expects a
+versioned configuration template such as `config-6.12`, not a merge fragment.
+
+The current ophub stable 6.12 configuration already contains the key
+first-stage requirements we have been targeting, including:
+
+- ARM64 / Meson platform support
+- initrd and common filesystem support
+- USB XHCI/EHCI/DWC3 and USB storage/UAS
+- USB audio (`SND_USB_AUDIO=m`)
+- Amlogic Meson audio drivers
+- module support
+
+The authoritative template is maintained in ophub/kernel.
+
+## Patch strategy
+
+`kernel-patch/6.12.y/` is intentionally empty in v0.3.1.
+
+`auto_patch` is disabled. We will only add a patch after a concrete build
+or N1 runtime test proves that it is necessary. This avoids carrying
+speculative patches on top of the unifreq hardware baseline.
 
 ## First-stage target
 
-U-Boot -> Linux -> pCP init/initrd -> Ethernet -> DHCP -> SSH -> ALSA
--> USB DAC -> Squeezelite -> LMS -> playback.
+    U-Boot
+      -> Linux
+      -> pCP init
+      -> Ethernet / DHCP
+      -> SSH
+      -> ALSA
+      -> USB DAC
+      -> Squeezelite
+      -> LMS playback
 
-HDMI/DRM is not the first-stage blocker.
+HDMI/DRM is not a first-stage blocker.
 
 ## GitHub Actions
 
-Run:
-`Actions -> Build S905 pCP kernel - Route B -> Run workflow`
-
-Defaults:
-- kernel branch: `6.12.y`
-- kernel repo: `https://github.com/unifreq/linux-6.12.y.git`
-
-The result is a kernel package, not a complete bootable pCP image.
-
-
-## GitHub Actions execution model
-
-The workflow does **not** depend on the executable bit stored in the ZIP or
-local filesystem. GitHub Actions explicitly runs:
-
-```sh
-chmod 0755 scripts/build.sh
-bash -n scripts/build.sh
-bash ./scripts/build.sh
-```
-
-The workflow also sets `defaults.run.shell: bash`. This makes the actual
-runner behavior deterministic even if the repository was prepared or
-transferred through an environment that did not preserve Unix executable
-permissions.
-
-## Scope
-
-v0.3.0 does not yet build the complete pCP initrd/rootfs, Squeezelite
-extensions, N1 image, U-Boot, or DMA-threshold DTB variant.
+There is no local `build.sh` in v0.3.1. The build is intentionally performed
+by the ophub GitHub Action/container so that kernel-series resolution and the
+actual compilation environment match ophub's workflow model.

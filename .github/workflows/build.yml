@@ -1,16 +1,43 @@
-name: Build S905 pCP kernel - Route B
+name: Build pCP N1 kernel
 
 on:
   workflow_dispatch:
     inputs:
       kernel_version:
-        description: "Kernel branch/tag"
+        description: "Kernel series"
         required: true
         default: "6.12.y"
-      kernel_repo:
-        description: "Kernel source repository"
+        type: choice
+        options:
+          - 6.12.y
+          - 6.18.y
+      kernel_auto:
+        description: "Use latest kernel in the selected series"
         required: true
-        default: "https://github.com/unifreq/linux-6.12.y.git"
+        default: true
+        type: boolean
+      kernel_toolchain:
+        description: "Kernel toolchain"
+        required: true
+        default: "gcc"
+        type: choice
+        options:
+          - gcc
+          - clang
+      kernel_package:
+        description: "Package list"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - image
+          - dtbs
+          - modules
+      kernel_sign:
+        description: "Kernel local version suffix"
+        required: true
+        default: "-pcp-n1"
 
 permissions:
   contents: read
@@ -18,12 +45,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-
-    env:
-      KERNEL_VERSION: ${{ inputs.kernel_version || '6.12.y' }}
-      KERNEL_REPO: ${{ inputs.kernel_repo || 'https://github.com/unifreq/linux-6.12.y.git' }}
-      DEBIAN_FRONTEND: noninteractive
-
     defaults:
       run:
         shell: bash
@@ -32,74 +53,56 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Validate repository
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            bc bison build-essential flex \
-            gcc-aarch64-linux-gnu \
-            git libelf-dev libssl-dev \
-            rsync cpio xz-utils zstd \
-            device-tree-compiler kmod
+          test -f .github/workflows/build.yml
+          test -f README.md
+          echo "S905-pCP-kernels v0.3.1"
+          echo "Workflow uses ophub/amlogic-s9xxx-armbian@main"
+          echo "Kernel series: ${{ inputs.kernel_version }}"
+          echo "Kernel auto:    ${{ inputs.kernel_auto }}"
+          echo "Toolchain:      ${{ inputs.kernel_toolchain }}"
+          echo "Package:        ${{ inputs.kernel_package }}"
+          echo "Sign:           ${{ inputs.kernel_sign }}"
 
-      - name: Prepare build script
+      - name: Compile kernel with ophub
+        uses: ophub/amlogic-s9xxx-armbian@main
+        with:
+          build_target: kernel
+          kernel_source: unifreq
+          kernel_version: ${{ inputs.kernel_version }}
+          kernel_auto: ${{ inputs.kernel_auto }}
+          kernel_package: ${{ inputs.kernel_package }}
+          kernel_toolchain: ${{ inputs.kernel_toolchain }}
+          kernel_sign: ${{ inputs.kernel_sign }}
+          config_flavor: stable
+          kernel_patch: kernel-patch
+          auto_patch: false
+          compress_format: xz
+          delete_source: false
+          silent_log: false
+          enable_log: true
+
+      - name: Show ophub outputs
         run: |
           set -euo pipefail
+          echo "PACKAGED_STATUS=${PACKAGED_STATUS:-unset}"
+          echo "PACKAGED_OUTPUTPATH=${PACKAGED_OUTPUTPATH:-unset}"
+          echo "PACKAGED_OUTPUTTAGS=${PACKAGED_OUTPUTTAGS:-unset}"
+          echo
+          if [[ -n "${PACKAGED_OUTPUTPATH:-}" && -d "${PACKAGED_OUTPUTPATH}" ]]; then
+            find "${PACKAGED_OUTPUTPATH}" -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
+          else
+            find . -maxdepth 5 -type f \( -name '*Image*' -o -name '*.dtb' -o -name '*.tar.*' -o -name '*.deb' \) -print | sort || true
+          fi
 
-          test -f scripts/build.sh
-          test -f config/n1-pcp.fragment
-
-          # Never rely on executable bits surviving ZIP/local filesystem/checkout.
-          chmod 0755 scripts/build.sh
-
-          echo "==> build.sh permissions"
-          stat -c '%A %a %n' scripts/build.sh
-
-          echo "==> build.sh syntax check"
-          bash -n scripts/build.sh
-
-          echo "==> fragment"
-          stat -c '%A %a %n' config/n1-pcp.fragment
-
-      - name: Run kernel build script
-        run: |
-          set -euo pipefail
-          bash ./scripts/build.sh
-
-      - name: Verify build output
-        run: |
-          set -euo pipefail
-
-          test -f .work/package/boot/Image
-          test -f .work/package/boot/dtb/amlogic/meson-gxl-s905d-phicomm-n1.dtb
-          test -f .work/package/kernel.config
-          test -f .work/package/kernel.commit
-
-          echo "==> Build output"
-          find .work/package -maxdepth 5 -type f -print | sort
-
-          echo "==> Image"
-          file .work/package/boot/Image
-
-          echo "==> N1 DTB"
-          file .work/package/boot/dtb/amlogic/meson-gxl-s905d-phicomm-n1.dtb
-
-      - name: Package artifact
-        run: |
-          set -euo pipefail
-
-          tar -C .work \
-            -czf "s905-pcp-routeB-${KERNEL_VERSION}.tar.gz" \
-            package
-
-          sha256sum "s905-pcp-routeB-${KERNEL_VERSION}.tar.gz"
-
-      - name: Upload kernel artifact
+      - name: Upload build artifacts
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: s905-pcp-routeB-${{ env.KERNEL_VERSION }}
+          name: pcp-n1-kernel-${{ inputs.kernel_version }}
           path: |
-            s905-pcp-routeB-${{ env.KERNEL_VERSION }}.tar.gz
-            .work/package/kernel.config
-            .work/package/kernel.commit
+            compile-kernel/output/**
+          if-no-files-found: warn
+          retention-days: 14

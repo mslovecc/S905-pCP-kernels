@@ -1,164 +1,112 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-KERNEL_VERSION="${KERNEL_VERSION:-6.12.67}"
-KERNEL_TAG="v${KERNEL_VERSION}"
-KERNEL_LOCALVERSION="${KERNEL_LOCALVERSION:--pcp-s905}"
+KERNEL_VERSION="${KERNEL_VERSION:-6.12.y}"
+KERNEL_REPO="${KERNEL_REPO:-https://github.com/unifreq/linux-6.12.y.git}"
 ARCH=arm64
 CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
+LOCALVERSION="${KERNEL_LOCALVERSION:--pcp-n1}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${ROOT_DIR}/.work"
 SRC="${WORK}/linux"
-PKG="${WORK}/package/kernel"
-FRAGMENT="${ROOT_DIR}/config/n1.fragment"
+PKG="${WORK}/package"
+FRAGMENT="${ROOT_DIR}/config/n1-pcp.fragment"
 
 rm -rf "${WORK}"
 mkdir -p "${WORK}" "${PKG}"
 
-echo "==> Kernel: ${KERNEL_TAG}"
-echo "==> Target: Phicomm N1 / S905D"
-echo "==> ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}"
+echo "=========================================="
+echo " S905 pCP Route B"
+echo " Kernel : ${KERNEL_VERSION}"
+echo " Source : ${KERNEL_REPO}"
+echo "=========================================="
 
-if ! command -v "${CROSS_COMPILE}gcc" >/dev/null 2>&1; then
-  echo "ERROR: missing cross compiler: ${CROSS_COMPILE}gcc" >&2
+git clone --depth=1 --branch "${KERNEL_VERSION}" "${KERNEL_REPO}" "${SRC}"
+cd "${SRC}"
+
+echo "==> Kernel commit"
+git rev-parse HEAD
+git describe --always --tags || true
+
+echo "==> Clean"
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" mrproper
+
+echo "==> Base config"
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" defconfig
+
+echo "==> Merge pCP/N1 fragment"
+"${SRC}/scripts/kconfig/merge_config.sh" -m "${SRC}/.config" "${FRAGMENT}"
+
+echo "==> Resolve Kconfig"
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" olddefconfig
+
+check_cfg() {
+  local key="$1" allowed="$2" value
+  value="$(grep -E "^${key}=" .config | head -n1 | cut -d= -f2- || true)"
+  if [[ " ${allowed} " != *" ${value} "* ]]; then
+    echo "ERROR: ${key}=${value:-UNSET}; expected: ${allowed}"
+    exit 1
+  fi
+  echo "OK: ${key}=${value}"
+}
+
+echo "==> Verify critical config"
+check_cfg CONFIG_ARM64 "y"
+check_cfg CONFIG_ARCH_MESON "y"
+check_cfg CONFIG_BLK_DEV_INITRD "y"
+check_cfg CONFIG_DEVTMPFS "y"
+check_cfg CONFIG_MMC_MESON_GX "y"
+check_cfg CONFIG_EXT4_FS "y"
+check_cfg CONFIG_SQUASHFS "y"
+check_cfg CONFIG_USB "y"
+check_cfg CONFIG_USB_STORAGE "y"
+check_cfg CONFIG_USB_UAS "y m"
+check_cfg CONFIG_STMMAC_ETH "y m"
+check_cfg CONFIG_MESON_GXL_PHY "y m"
+check_cfg CONFIG_SND "y"
+check_cfg CONFIG_SND_USB_AUDIO "y m"
+check_cfg CONFIG_MODULES "y"
+
+DTS="${SRC}/arch/arm64/boot/dts/amlogic/meson-gxl-s905d-phicomm-n1.dts"
+DTB="${SRC}/arch/arm64/boot/dts/amlogic/meson-gxl-s905d-phicomm-n1.dtb"
+
+echo "==> Check N1 DTS"
+test -f "${DTS}"
+grep -q 'meson-gxl-s905d-phicomm-n1.dtb' "${SRC}/arch/arm64/boot/dts/amlogic/Makefile"
+echo "OK: N1 DTS and DTB registration found"
+
+echo "==> Build Image"
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" LOCALVERSION="${LOCALVERSION}" -j"$(nproc)" Image
+
+echo "==> Build DTBs via Kbuild"
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" LOCALVERSION="${LOCALVERSION}" -j"$(nproc)" dtbs
+
+if [[ ! -f "${DTB}" ]]; then
+  echo "ERROR: N1 DTB was not generated"
+  find "${SRC}/arch/arm64/boot/dts" -name 'meson-gxl-s905d-phicomm-n1.dtb' -print
   exit 1
 fi
 
-echo "==> Cloning Linux stable ${KERNEL_TAG}"
-git clone --depth=1 --branch "${KERNEL_TAG}" \
-  https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git "${SRC}"
-
-cd "${SRC}"
-
-HEAD_COMMIT="$(git rev-parse HEAD)"
-echo "==> Kernel commit: ${HEAD_COMMIT}"
-echo "==> Kernel describe: $(git describe --tags --always --dirty 2>/dev/null || true)"
-
-git cat-file -e "HEAD^{commit}"
-
-echo "==> Clean source tree"
-make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" mrproper
-
-echo "==> Base config (in-tree)"
-make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" defconfig
-
-echo "==> Merge N1 fragment"
-"${SRC}/scripts/kconfig/merge_config.sh" \
-  -m \
-  "${SRC}/.config" \
-  "${FRAGMENT}"
-
-echo "==> Resolve Kconfig dependencies"
-make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" olddefconfig
-
-state() {
-  local sym="$1"
-  sed -n "s/^${sym}=//p" .config | head -n1
-}
-
-expect_y_or_m() {
-  local sym="$1"
-  local v
-  v="$(state "${sym}")"
-  if [[ "${v}" != "y" && "${v}" != "m" ]]; then
-    echo "ERROR: ${sym}=${v:-n}, expected y or m" >&2
-    return 1
-  fi
-  echo "OK: ${sym}=${v}"
-}
-
-expect_y() {
-  local sym="$1"
-  local v
-  v="$(state "${sym}")"
-  if [[ "${v}" != "y" ]]; then
-    echo "ERROR: ${sym}=${v:-n}, expected y" >&2
-    return 1
-  fi
-  echo "OK: ${sym}=y"
-}
-
-echo "==> Final kernel identity"
-grep -E '^(CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO=)' .config || true
-
-echo "==> Key final config"
-for s in \
-  CONFIG_ARM64 CONFIG_ARCH_MESON CONFIG_OF CONFIG_BLK_DEV_INITRD \
-  CONFIG_MMC_MESON_GX CONFIG_EXT4_FS CONFIG_SQUASHFS \
-  CONFIG_USB CONFIG_USB_XHCI_HCD CONFIG_USB_DWC3 \
-  CONFIG_USB_STORAGE CONFIG_USB_UAS CONFIG_SCSI \
-  CONFIG_STMMAC_ETH CONFIG_STMMAC_PLATFORM CONFIG_DWMAC_MESON \
-  CONFIG_MESON_GXL_PHY CONFIG_SERIAL_MESON \
-  CONFIG_SOUND CONFIG_SND CONFIG_SND_PCM CONFIG_SND_USB \
-  CONFIG_SND_USB_AUDIO CONFIG_SND_SOC \
-  CONFIG_SND_MESON_AIU CONFIG_SND_MESON_GX_SOUND_CARD \
-  CONFIG_MODULES; do
-  printf '%-42s %s\n' "${s}" "$(state "${s}")"
-done
-
-echo "==> Verify boot-critical options"
-for s in \
-  CONFIG_ARM64 CONFIG_ARCH_MESON CONFIG_OF CONFIG_BLK_DEV_INITRD \
-  CONFIG_DEVTMPFS CONFIG_DEVTMPFS_MOUNT \
-  CONFIG_MMC CONFIG_MMC_BLOCK CONFIG_MMC_MESON_GX \
-  CONFIG_EXT4_FS CONFIG_SQUASHFS CONFIG_BLK_DEV_LOOP \
-  CONFIG_USB CONFIG_USB_XHCI_HCD CONFIG_USB_DWC3 \
-  CONFIG_USB_STORAGE CONFIG_SCSI CONFIG_BLK_DEV_SD \
-  CONFIG_NET CONFIG_NETDEVICES CONFIG_ETHERNET CONFIG_PHYLIB \
-  CONFIG_TTY CONFIG_SERIAL_MESON CONFIG_SERIAL_MESON_CONSOLE \
-  CONFIG_SOUND CONFIG_SND CONFIG_SND_PCM CONFIG_SND_USB \
-  CONFIG_SND_SOC CONFIG_MODULES; do
-  expect_y "${s}"
-done
-
-echo "==> Verify driver options (y or m)"
-for s in \
-  CONFIG_USB_UAS \
-  CONFIG_STMMAC_ETH CONFIG_STMMAC_PLATFORM CONFIG_DWMAC_GENERIC \
-  CONFIG_DWMAC_MESON CONFIG_MESON_GXL_PHY \
-  CONFIG_SND_USB_AUDIO CONFIG_SND_MESON_AIU \
-  CONFIG_SND_MESON_CARD_UTILS CONFIG_SND_MESON_CODEC_GLUE \
-  CONFIG_SND_MESON_GX_SOUND_CARD; do
-  expect_y_or_m "${s}"
-done
-
-echo "==> Build kernel Image"
-make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
-  LOCALVERSION="${KERNEL_LOCALVERSION}" -j"$(nproc)" Image
-
-echo "==> Check N1 DTS"
-DTS="arch/arm64/boot/dts/amlogic/meson-gxl-s905d-phicomm-n1.dts"
-DTB="arch/arm64/boot/dts/amlogic/meson-gxl-s905d-phicomm-n1.dtb"
-test -f "${DTS}"
-grep -q 'meson-gxl-s905d-phicomm-n1.dtb' arch/arm64/boot/dts/amlogic/Makefile
-echo "OK: N1 DTS and DTB registration found"
-
-echo "==> Build N1 DTB"
-make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}"   LOCALVERSION="${KERNEL_LOCALVERSION}"   meson-gxl-s905d-phicomm-n1.dtb
-test -f "${DTB}"
-echo "OK: ${DTB}"
-
 echo "==> Build modules"
-make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
-  LOCALVERSION="${KERNEL_LOCALVERSION}" -j"$(nproc)" modules
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" LOCALVERSION="${LOCALVERSION}" -j"$(nproc)" modules
 
-echo "==> Install modules into package"
-make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
-  LOCALVERSION="${KERNEL_LOCALVERSION}" \
-  INSTALL_MOD_PATH="${PKG}/rootfs" modules_install
+echo "==> Install modules"
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" LOCALVERSION="${LOCALVERSION}" INSTALL_MOD_PATH="${PKG}/rootfs" modules_install
 
-mkdir -p "${PKG}/boot" "${PKG}/config"
-cp "arch/arm64/boot/Image" \
-  "${PKG}/boot/Image-${KERNEL_VERSION}-pcp-s905"
-cp "arch/arm64/boot/dts/amlogic/meson-gxl-s905d-phicomm-n1.dtb" \
-  "${PKG}/boot/meson-gxl-s905d-phicomm-n1.dtb"
-cp ".config" "${PKG}/config/kernel.config"
-cp "${FRAGMENT}" "${PKG}/config/n1.fragment"
-printf '%s\n' "${HEAD_COMMIT}" > "${PKG}/config/kernel.commit"
-printf '%s\n' "${KERNEL_VERSION}" > "${PKG}/config/kernel.version"
+echo "==> Package kernel"
+mkdir -p "${PKG}/boot/dtb/amlogic"
+cp arch/arm64/boot/Image "${PKG}/boot/Image"
+cp "${DTB}" "${PKG}/boot/dtb/amlogic/meson-gxl-s905d-phicomm-n1.dtb"
+cp .config "${PKG}/kernel.config"
+git rev-parse HEAD > "${PKG}/kernel.commit"
 
-echo "==> Package contents"
-find "${PKG}" -type f -printf '%P\n' | sort
+cat > "${PKG}/boot/uEnv.txt.example" <<'EOF'
+LINUX=/Image
+INITRD=/uInitrd
+FDT=/dtb/amlogic/meson-gxl-s905d-phicomm-n1.dtb
+APPEND=root=/dev/mmcblk0p2 rootfstype=ext4 rw console=ttyAML0,115200n8 console=tty0
+EOF
 
-echo "==> Kernel build complete"
+echo "==> Build completed"
+find "${PKG}" -maxdepth 4 -type f -print

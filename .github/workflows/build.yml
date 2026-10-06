@@ -1,12 +1,16 @@
-name: Build S905 piCorePlayer kernel (in-tree)
+name: Build S905 pCP kernel - Route B
 
 on:
   workflow_dispatch:
     inputs:
       kernel_version:
-        description: "Linux kernel stable version"
+        description: "Kernel branch/tag"
         required: true
-        default: "6.12.67"
+        default: "6.12.y"
+      kernel_repo:
+        description: "Kernel source repository"
+        required: true
+        default: "https://github.com/unifreq/linux-6.12.y.git"
 
 permissions:
   contents: read
@@ -14,9 +18,15 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
+
     env:
-      KERNEL_VERSION: ${{ inputs.kernel_version || '6.12.67' }}
+      KERNEL_VERSION: ${{ inputs.kernel_version || '6.12.y' }}
+      KERNEL_REPO: ${{ inputs.kernel_repo || 'https://github.com/unifreq/linux-6.12.y.git' }}
       DEBIAN_FRONTEND: noninteractive
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout repository
@@ -24,51 +34,72 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y \
-            bc \
-            bison \
-            build-essential \
-            flex \
+            bc bison build-essential flex \
             gcc-aarch64-linux-gnu \
-            git \
-            libelf-dev \
-            libssl-dev \
-            rsync \
-            u-boot-tools
+            git libelf-dev libssl-dev \
+            rsync cpio xz-utils zstd \
+            device-tree-compiler kmod
 
-      - name: Show build version
+      - name: Prepare build script
         run: |
-          echo "Requested kernel version: ${KERNEL_VERSION}"
-          echo "==> Repository files"
-          ls -la
-          ls -la config scripts .github/workflows
-          echo "==> Normalize executable bit"
-          chmod +x scripts/build.sh
-          test -f config/n1.fragment
+          set -euo pipefail
+
           test -f scripts/build.sh
-          test -f .github/workflows/build.yml
-          sha256sum config/n1.fragment scripts/build.sh .github/workflows/build.yml
+          test -f config/n1-pcp.fragment
 
-      - name: Build kernel
-        run: |
-          chmod +x scripts/build.sh
-          KERNEL_VERSION="${KERNEL_VERSION}" ./scripts/build.sh
+          # Never rely on executable bits surviving ZIP/local filesystem/checkout.
+          chmod 0755 scripts/build.sh
 
-      - name: Prepare artifacts
+          echo "==> build.sh permissions"
+          stat -c '%A %a %n' scripts/build.sh
+
+          echo "==> build.sh syntax check"
+          bash -n scripts/build.sh
+
+          echo "==> fragment"
+          stat -c '%A %a %n' config/n1-pcp.fragment
+
+      - name: Run kernel build script
         run: |
-          rm -rf artifacts
-          mkdir -p artifacts
-          cp -a .work/package/kernel/. artifacts/
-          tar -C artifacts -czf "S905-pCP-kernel-${KERNEL_VERSION}-n1.tar.gz" \
-            boot config rootfs
-          rm -rf artifacts/rootfs
-          find artifacts -maxdepth 3 -type f -print | sort
+          set -euo pipefail
+          bash ./scripts/build.sh
+
+      - name: Verify build output
+        run: |
+          set -euo pipefail
+
+          test -f .work/package/boot/Image
+          test -f .work/package/boot/dtb/amlogic/meson-gxl-s905d-phicomm-n1.dtb
+          test -f .work/package/kernel.config
+          test -f .work/package/kernel.commit
+
+          echo "==> Build output"
+          find .work/package -maxdepth 5 -type f -print | sort
+
+          echo "==> Image"
+          file .work/package/boot/Image
+
+          echo "==> N1 DTB"
+          file .work/package/boot/dtb/amlogic/meson-gxl-s905d-phicomm-n1.dtb
+
+      - name: Package artifact
+        run: |
+          set -euo pipefail
+
+          tar -C .work \
+            -czf "s905-pcp-routeB-${KERNEL_VERSION}.tar.gz" \
+            package
+
+          sha256sum "s905-pcp-routeB-${KERNEL_VERSION}.tar.gz"
 
       - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S905-pCP-kernel-${{ env.KERNEL_VERSION }}-n1
-          path: artifacts/
-          if-no-files-found: error
-          retention-days: 14
+          name: s905-pcp-routeB-${{ env.KERNEL_VERSION }}
+          path: |
+            s905-pcp-routeB-${{ env.KERNEL_VERSION }}.tar.gz
+            .work/package/kernel.config
+            .work/package/kernel.commit

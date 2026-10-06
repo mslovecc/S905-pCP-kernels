@@ -1,76 +1,65 @@
-# tinycore-s905-kernel
+# S905-pCP-kernels v0.3.0 — Route B
 
-Linux kernel build repository for the Tiny Core S905 family.
+Route B uses `unifreq/linux-6.12.y` as the Phicomm N1 hardware/kernel
+baseline, then adds piCorePlayer runtime requirements with a small Kconfig
+fragment.
 
-## First target
+Target: Phicomm N1 / Amlogic S905D / Meson GXL / ARM64.
 
-- Board: Phicomm N1
-- SoC: Amlogic S905D
-- Platform: Meson GXL
-- DTB: `meson-gxl-s905d-phicomm-n1.dtb`
-- Architecture: ARM64
-- Kernel baseline: Linux 6.18.55 LTS
+Normal N1 DTB:
+`meson-gxl-s905d-phicomm-n1.dtb`
 
-The first release intentionally uses an upstream Linux kernel and the upstream
-Phicomm N1 device tree. Board-specific patches are kept separate under
-`patches/` and are only added when required.
+The alternate DMA-threshold DTB is intentionally not selected in v0.3.0.
 
-## Repository layout
+## Build flow
 
-```text
-tinycore-s905-kernel/
-├── boards/
-│   └── meson-gxl/
-│       └── phicomm-n1/
-├── config/
-│   └── n1.fragment
-├── patches/
-├── scripts/
-│   └── build.sh
-└── .github/workflows/
-    └── build.yml
+unifreq/linux-6.12.y -> defconfig -> n1-pcp.fragment -> olddefconfig
+-> Image + `make dtbs` + modules -> `.work/package/`
+
+The DTB is built with `make dtbs`; this avoids the previous incorrect bare
+top-level DTB target.
+
+## U-Boot
+
+U-Boot is not rebuilt here. Keep using the known-good N1 U-Boot from the
+ophub/unifreq ecosystem, such as `u-boot-n1.bin`.
+
+## First-stage target
+
+U-Boot -> Linux -> pCP init/initrd -> Ethernet -> DHCP -> SSH -> ALSA
+-> USB DAC -> Squeezelite -> LMS -> playback.
+
+HDMI/DRM is not the first-stage blocker.
+
+## GitHub Actions
+
+Run:
+`Actions -> Build S905 pCP kernel - Route B -> Run workflow`
+
+Defaults:
+- kernel branch: `6.12.y`
+- kernel repo: `https://github.com/unifreq/linux-6.12.y.git`
+
+The result is a kernel package, not a complete bootable pCP image.
+
+
+## GitHub Actions execution model
+
+The workflow does **not** depend on the executable bit stored in the ZIP or
+local filesystem. GitHub Actions explicitly runs:
+
+```sh
+chmod 0755 scripts/build.sh
+bash -n scripts/build.sh
+bash ./scripts/build.sh
 ```
 
-## Design rules
+The workflow also sets `defaults.run.shell: bash`. This makes the actual
+runner behavior deterministic even if the repository was prepared or
+transferred through an environment that did not preserve Unix executable
+permissions.
 
-1. Build `Image`, not a distro-specific `zImage`.
-2. Build the N1 DTB from the same kernel source tree.
-3. Build modules from the same source/config as the kernel.
-4. Keep boot-critical storage/filesystem support built in where practical.
-5. Do not copy kernel modules from Armbian/ophub.
-6. Release `Image + DTB + modules + config + build metadata + SHA256` together.
-7. The image repository consumes this repository's release artifact; it does not
-   compile or modify the kernel.
+## Scope
 
-## First-stage boot strategy
-
-The first N1 test can keep the known-good N1 U-Boot from the existing system.
-Only kernel/DTB/modules are replaced. This isolates kernel/userspace problems
-from U-Boot problems.
-
-Expected kernel artifacts:
-
-```text
-Image
-dtbs/amlogic/meson-gxl-s905d-phicomm-n1.dtb
-modules/lib/modules/<kernel-release>/
-config
-build-info.txt
-SHA256SUMS
-```
-
-## Local build
-
-On an ARM64-capable Linux host with the required cross compiler:
-
-```bash
-./scripts/build.sh
-```
-
-The GitHub Actions workflow performs the same build in a clean Ubuntu runner.
-
-## Versioning
-
-Kernel source version and distro kernel localversion are defined in
-`scripts/build.sh`. A release is immutable and should be consumed by exact
-GitHub release tag and SHA256 from `tinycore-s905-image`.
+v0.3.0 does not yet build the complete pCP initrd/rootfs, Squeezelite
+extensions, N1 image, U-Boot, or DMA-threshold DTB variant.
